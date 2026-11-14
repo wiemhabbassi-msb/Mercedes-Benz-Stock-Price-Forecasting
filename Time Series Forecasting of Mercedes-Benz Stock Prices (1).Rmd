@@ -1,0 +1,293 @@
+---
+title: "Project"
+"Wiem Habbassi"
+---
+
+
+#Library
+
+
+```{r setup, include=FALSE}
+
+library(dplyr)
+library(tseries)
+library(forecast)
+library(prophet)
+library(Metrics)
+
+
+
+library(TSA)
+library(astsa)
+library(TSstudio)
+library(tidyverse)
+library(ggpubr)
+library(fpp2)
+library(ggplot2)
+library(ggfortify)
+library(patchwork)  
+
+
+
+```
+
+
+
+
+```{r cars}
+data <- read.csv("Mercedes_Stock.csv", sep = ";")
+colnames(data)
+
+head(data)
+str(data)
+summary(data)
+
+data$Date <- as.Date(data$Date)
+data$Close <- as.numeric(data$Close)
+
+ts_data <- ts(data$Close, frequency = 252)
+
+plot(ts_data, main="Mercedes Stock Closing Price")
+
+```
+The dataset contains 7,511 observations of Mercedes stock prices, including variables such as Open, High, Low, Close, Adjusted Close, and Volume. The Date variable was converted into a proper date format. The Close price was selected for time series analysis. The plot exhibits significant fluctuations over time, with alternating periods of increase and decrease. No clear overall trend is observed, and there is no evidence of a repeating seasonal pattern.The series exhibits high volatility and behaves like a random walk, which is typical of financial stock prices. This makes forecasting inherently challenging.
+
+```{r}
+
+adf.test(ts_data)
+
+```
+The Augmented Dickey-Fuller test was conducted to assess stationarity. The resulting p-value (0.2145) is greater than 0.05, indicating that the null hypothesis of non-stationarity cannot be rejected. Therefore, the time series is not stationary.
+
+This confirms that stock prices follow a non-stationary process, often modeled as a stochastic trend.
+```{r}
+ts_log <- log(ts_data)
+
+ts_log_diff <- diff(ts_log)
+
+plot(ts_log_diff)
+
+adf.test(ts_log_diff)
+```
+To achieve stationarity, a logarithmic transformation followed by first differencing was applied to the data. The Augmented Dickey-Fuller test on the transformed series yielded a p-value of 0.01, which is below the 0.05 threshold. This indicates that the null hypothesis of non-stationarity can be rejected, confirming that the series is now stationary.
+
+
+Although differencing was applied to verify stationarity, the ARIMA model was fitted on the log-transformed series, allowing the model to internally determine the required differencing order.
+```{r}
+n <- length(ts_log)
+
+train <- ts_log[1:floor(0.7*n)]
+valid <- ts_log[(floor(0.7*n)+1):floor(0.85*n)]
+test  <- ts_log[(floor(0.85*n)+1):n]
+
+length(train)
+length(valid)
+length(test)
+
+
+
+```
+The time series was split into training (70%), validation (15%), and test (15%) sets, preserving the chronological order of observations. This ensures that the model is trained on past data and evaluated on future data, which is appropriate for time series forecasting.
+```{r}
+
+model_arima <- auto.arima(train)
+
+summary(model_arima)
+
+f_arima_val <- forecast(model_arima, h = length(valid))
+
+```
+The selected ARIMA model is ARIMA(2,1,5), indicating that the series was differenced once to achieve stationarity, with two autoregressive terms and five moving average terms.
+
+The ARIMA(2,1,5) model captures short-term dependencies after differencing, which aligns with financial time series behavior
+```{r}
+model_ets <- ets(train)
+
+summary(model_ets)
+
+f_ets_val <- forecast(model_ets, h = length(valid))
+
+```
+The ETS model selected is ETS(A,N,N), indicating an exponential smoothing model with additive errors, no trend, and no seasonality. The smoothing parameter is close to 1, indicating that the model places strong emphasis on the most recent observations. This suggests that only the level component is relevant, reinforcing the absence of trend and seasonality.
+```{r}
+aic_bic_table <- data.frame(
+  Model = c("ARIMA", "ETS"),
+  AIC = c(AIC(model_arima), AIC(model_ets)),
+  BIC = c(BIC(model_arima), BIC(model_ets))
+)
+
+aic_bic_table
+```
+Table X presents the AIC and BIC values for the ARIMA and ETS models. The ARIMA model exhibits significantly lower AIC and BIC values compared to the ETS model, indicating a better in-sample fit while accounting for model complexity.
+
+This suggests that ARIMA provides a more efficient representation of the underlying data structure. However, information criteria alone are not sufficient for model selection, and therefore out-of-sample forecasting performance is also evaluated using validation and test sets.
+
+It should be noted that these criteria are not applicable to the Prophet model, which is not based on a likelihood framework.
+```{r}
+checkresiduals(model_arima)
+checkresiduals(model_ets)
+```
+Residual diagnostics were conducted for both the ARIMA and ETS models to evaluate their adequacy. For the ARIMA model, the residuals fluctuate randomly around zero and show no clear pattern, indicating that the model successfully captures the main structure of the time series. The autocorrelation function (ACF) confirms that most correlations are within the confidence bounds, suggesting that the residuals behave like white noise.
+
+For the ETS model, the residuals also appear centered around zero and approximately normally distributed. However, the ACF shows a few significant spikes, indicating the presence of some remaining autocorrelation. This suggests that the ETS model does not fully capture all temporal dependencies in the data.
+
+Overall, both models are acceptable, but the ARIMA model provides slightly better residual behavior, supporting its suitability for forecasting this dataset.
+
+```{r}
+df <- data.frame(
+  ds = data$Date,
+  y = log(data$Close)
+)
+
+n <- nrow(df)
+
+train_df <- df[1:floor(0.7*n), ]
+valid_df <- df[(floor(0.7*n)+1):floor(0.85*n), ]
+test_df  <- df[(floor(0.85*n)+1):n, ]
+
+model_prophet <- prophet(train_df)
+
+future <- make_future_dataframe(model_prophet, periods = nrow(valid_df))
+
+forecast_prophet <- predict(model_prophet, future)
+
+pred_prophet <- tail(forecast_prophet$yhat, nrow(valid_df))
+
+```
+In addition to ARIMA and ETS, the Prophet model was implemented as an alternative forecasting approach to capture potential trends in the time series.
+
+Prophet may struggle here because stock prices lack strong seasonal patterns, which are central to Prophet’s modeling approach.
+
+Although Prophet requires a different input structure compared to ARIMA and ETS, the same chronological data split was applied. This ensures that all models are trained and evaluated on identical time periods, allowing for a fair and consistent comparison of forecasting performance.
+```{r}
+actual_val <- as.numeric(valid)
+pred_arima <- as.numeric(f_arima_val$mean)
+pred_ets   <- as.numeric(f_ets_val$mean)
+
+# ARIMA
+rmse_arima <- rmse(actual_val, pred_arima)
+mape_arima <- mape(actual_val, pred_arima)
+
+# ETS
+rmse_ets <- rmse(actual_val, pred_ets)
+mape_ets <- mape(actual_val, pred_ets)
+
+# Prophet 
+pred_prophet <- as.numeric(pred_prophet)
+actual_prophet <- as.numeric(valid_df$y)
+
+rmse_prophet <- rmse(actual_prophet, pred_prophet)
+mape_prophet <- mape(actual_prophet, pred_prophet)
+
+```
+```{r}
+comparison_val <- data.frame(
+  Model = c("ARIMA", "ETS", "Prophet"),
+  RMSE = c(rmse_arima, rmse_ets, rmse_prophet),
+  MAPE = c(mape_arima, mape_ets, mape_prophet)
+)
+
+comparison_val
+```
+The forecasting performance of the ARIMA, ETS, and Prophet models was evaluated on the validation set using RMSE and MAPE metrics.
+
+The results indicate that the ETS model achieved the lowest RMSE (0.3167) and MAPE (0.0656), closely followed by the ARIMA model with nearly identical performance. In contrast, the Prophet model exhibited slightly higher error values (RMSE = 0.3225, MAPE = 0.0678), indicating comparatively lower accuracy.
+
+The similarity between ARIMA and ETS suggests that both models are well-suited for capturing the underlying structure of the time series. However, the slightly better performance of ETS indicates that a level-based model is sufficient for this dataset, which aligns with the absence of strong trend and seasonal components.
+
+Based on these results, the ETS model is selected as the best-performing model on the validation set.
+```{r}
+plot(actual_val, type = "l", col = "black", lwd = 2,
+     main = "Validation Set: Actual vs Forecast",
+     ylab = "Log(Close Price)", xlab = "Time")
+
+lines(pred_arima, col = "blue", lwd = 2)
+lines(pred_ets, col = "green", lwd = 2)
+lines(pred_prophet, col = "purple", lwd = 2)
+
+legend("topleft",
+       legend = c("Actual", "ARIMA", "ETS", "Prophet"),
+       col = c("black", "blue", "green", "purple"),
+       lty = 1, lwd = 2)
+```
+
+Forecast Visualization
+
+Figure X illustrates the comparison between the actual values and the forecasts generated by the ARIMA, ETS, and Prophet models on the validation set.
+
+Both the ARIMA and ETS models closely track the actual time series, capturing the overall movement and short-term fluctuations reasonably well. However, neither model fully captures the sharp drop observed around the middle of the validation period, which reflects the inherent difficulty of forecasting highly volatile financial data.
+
+In contrast, the Prophet model exhibits larger deviations from the actual values, with pronounced oscillations that do not align well with the observed data. This indicates that Prophet struggles to adapt to the irregular and non-seasonal nature of the stock price series.
+
+Overall, the visual analysis confirms the quantitative results, showing that ARIMA and ETS outperform Prophet, with ETS providing a slightly smoother and more stable fit.
+```{r}
+actual_test <- as.numeric(test)
+actual_prophet_test <- as.numeric(test_df$y)
+
+f_arima_test <- forecast(model_arima, h = length(test))
+
+pred_arima_test <- as.numeric(f_arima_test$mean)
+
+rmse_arima_test <- rmse(actual_test, pred_arima_test)
+mape_arima_test <- mape(actual_test, pred_arima_test)
+
+f_ets_test <- forecast(model_ets, h = length(test))
+
+pred_ets_test <- as.numeric(f_ets_test$mean)
+
+rmse_ets_test <- rmse(actual_test, pred_ets_test)
+mape_ets_test <- mape(actual_test, pred_ets_test)
+
+future_test <- make_future_dataframe(model_prophet, periods = nrow(test_df))
+
+forecast_prophet_test <- predict(model_prophet, future_test)
+
+pred_prophet_test <- as.numeric(
+  tail(forecast_prophet_test$yhat, nrow(test_df))
+)
+
+rmse_prophet_test <- rmse(actual_prophet_test, pred_prophet_test)
+mape_prophet_test <- mape(actual_prophet_test, pred_prophet_test)
+
+comparison_test <- data.frame(
+  Model = c("ARIMA", "ETS", "Prophet"),
+  RMSE = c(rmse_arima_test, rmse_ets_test, rmse_prophet_test),
+  MAPE = c(mape_arima_test, mape_ets_test, mape_prophet_test)
+)
+
+comparison_test
+
+plot(actual_test, type = "l", col = "black", lwd = 2,
+     main = "Test Set: Actual vs Forecast",
+     ylab = "Log(Close Price)", xlab = "Time")
+
+lines(pred_arima_test, col = "blue", lwd = 2)
+lines(pred_ets_test, col = "green", lwd = 2)
+lines(pred_prophet_test, col = "purple", lwd = 2)
+
+legend("topleft",
+       legend = c("Actual", "ARIMA", "ETS", "Prophet"),
+       col = c("black", "blue", "green", "purple"),
+       lty = 1, lwd = 2)
+```
+🔹 Forecast Visualization (Test Set)
+
+Figure X illustrates the comparison between actual values and forecasts on the test set.
+
+The ARIMA model closely follows the actual series, capturing both the direction and magnitude of fluctuations with reasonable accuracy. The ETS model provides a smoother forecast, but slightly underfits the variability in the data, resulting in a nearly flat prediction line.
+
+The Prophet model shows large deviations and irregular spikes, failing to align with the actual series. This highlights its inability to model the stochastic and highly volatile behavior of stock prices.
+
+Overall, the visual analysis reinforces the quantitative findings, confirming that ARIMA provides the most accurate and reliable forecasts.
+
+🔹 Conclusion
+
+This study analyzed the forecasting performance of ARIMA, ETS, and Prophet models on Mercedes stock price data. After preprocessing and ensuring stationarity, the models were trained and evaluated using validation and test sets.
+
+The validation results indicated that ETS slightly outperformed ARIMA, while Prophet showed lower accuracy. However, the final evaluation on the test set revealed that ARIMA achieved the best overall performance, although the difference with ETS remained minimal.
+
+The results suggest that stock prices behave as a stochastic process with no clear trend or seasonality, making ARIMA particularly suitable due to its ability to model short-term dependencies. ETS also performs well but tends to oversimplify the dynamics by focusing only on the level component.
+
+In contrast, Prophet performs poorly in this context, as it is better suited for time series with strong seasonal or trend structures.
+
+In conclusion, ARIMA is the most appropriate model for forecasting this dataset, providing the most accurate and consistent results.
